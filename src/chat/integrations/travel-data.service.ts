@@ -2,27 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
-import type { FlightStatusParams, RouteWeatherParams } from '../tools/tool-action.types';
+import type {
+  FlightStatusParams,
+  RouteWeatherParams,
+  WeatherAtFlightArrivalParams,
+} from '../tools/tool-action.types';
 
-/** Simple city name -> [lat, lon] for demo; extend as needed */
-const CITY_COORDS: Record<string, [number, number]> = {
-  barcelona: [41.3851, 2.1734],
-  madrid: [40.4168, -3.7038],
-  dublin: [53.3498, -6.2603],
-  london: [51.5074, -0.1278],
-  paris: [48.8566, 2.3522],
-  amsterdam: [52.3676, 4.9041],
-  rome: [41.9028, 12.4964],
-  lisbon: [38.7223, -9.1393],
-  newyork: [40.7128, -74.006],
-  'new york': [40.7128, -74.006],
-  losangeles: [34.0522, -118.2437],
-  'los angeles': [34.0522, -118.2437],
-};
-
-function normalizeCity(s: string): string {
-  return s.trim().toLowerCase().replace(/\s+/g, '');
-}
+const OPEN_METEO_GEOCODING_BASE = 'https://geocoding-api.open-meteo.com/v1';
 
 @Injectable()
 export class TravelDataService {
@@ -45,9 +31,38 @@ export class TravelDataService {
   }
 
   /**
-   * Fetch flight status from aviationstack. flight_number should be IATA (e.g. UA2402).
+   * Resolve city name to [lat, lon] using Open-Meteo geocoding API.
    */
-  async getFlightStatus(params: FlightStatusParams): Promise<{ summary: string; raw?: unknown }> {
+  private async geocodeCity(cityName: string): Promise<[number, number] | null> {
+    const name = cityName?.trim();
+    if (!name) return null;
+    const url = `${OPEN_METEO_GEOCODING_BASE}/search?name=${encodeURIComponent(name)}&count=1`;
+    try {
+      const res = await firstValueFrom(
+        this.http.get<{
+          results?: Array<{ latitude?: number; longitude?: number }>;
+        }>(url),
+      );
+      const first = res.data?.results?.[0];
+      if (first?.latitude != null && first?.longitude != null) {
+        return [first.latitude, first.longitude];
+      }
+      return null;
+    } catch (e) {
+      this.logger.warn('Geocoding failed for city', name, (e as Error).message);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch flight status from aviationstack. flight_number should be IATA (e.g. UA2402).
+   * When flight data is found, arrivalAirport is set for use by weather_at_flight_arrival.
+   */
+  async getFlightStatus(params: FlightStatusParams): Promise<{
+    summary: string;
+    raw?: unknown;
+    arrivalAirport?: string;
+  }> {
     const { flight_number, date } = params;
     if (!flight_number?.trim()) {
       return { summary: 'No flight number provided.' };
@@ -97,6 +112,7 @@ export class TravelDataService {
       const dep = first.departure;
       const arr = first.arrival;
       const airline = first.airline?.name ?? 'Unknown airline';
+      const arrivalAirport = arr?.airport?.trim() || undefined;
       const summary = [
         `Flight ${flightIata} (${airline}): ${status}.`,
         dep?.airport ? `Departure: ${dep.airport} (${dep.iata ?? ''}) ${dep.scheduled ?? ''}.` : '',
@@ -105,7 +121,7 @@ export class TravelDataService {
         .filter(Boolean)
         .join(' ');
 
-      return { summary, raw: first };
+      return { summary, raw: first, arrivalAirport };
     } catch (e) {
       this.logger.error('getFlightStatus failed', e as Error);
       return {
@@ -116,23 +132,33 @@ export class TravelDataService {
   }
 
   /**
-   * Fetch weather for origin and destination cities using Open-Meteo (no API key).
+   * Fetch weather for origin and destination cities using Open-Meteo (geocoding + forecast, no API key).
    */
   async getRouteWeather(params: RouteWeatherParams): Promise<{ summary: string; raw?: unknown }> {
     const { origin_city, destination_city } = params;
-    const originKey = normalizeCity(origin_city ?? '');
-    const destKey = normalizeCity(destination_city ?? '');
-    const originCoords = CITY_COORDS[originKey];
-    const destCoords = CITY_COORDS[destKey];
+    const originName = origin_city?.trim() ?? '';
+    const destName = destination_city?.trim() ?? '';
+
+    if (!originName) {
+      return { summary: 'No origin city provided.' };
+    }
+    if (!destName) {
+      return { summary: 'No destination city provided.' };
+    }
+
+    const [originCoords, destCoords] = await Promise.all([
+      this.geocodeCity(originName),
+      this.geocodeCity(destName),
+    ]);
 
     if (!originCoords) {
       return {
-        summary: `Unknown origin city: "${origin_city}". Supported demo cities: Barcelona, Madrid, Dublin, London, Paris, Amsterdam, Rome, Lisbon, New York, Los Angeles.`,
+        summary: `City not found: "${origin_city}". Please check the name and try again.`,
       };
     }
     if (!destCoords) {
       return {
-        summary: `Unknown destination city: "${destination_city}". Supported demo cities: Barcelona, Madrid, Dublin, London, Paris, Amsterdam, Rome, Lisbon, New York, Los Angeles.`,
+        summary: `City not found: "${destination_city}". Please check the name and try again.`,
       };
     }
 
@@ -153,6 +179,43 @@ export class TravelDataService {
       return {
         summary: 'Unable to fetch weather for the route. Please try again later.',
         raw: { error: String(e) },
+      };
+    }
+  }
+
+  /**
+   * Hybrid: get flight status and weather at the arrival city (for questions like
+   * "What temperature will it be at the arrival city of flight W61176?").
+   */
+  async getWeatherAtFlightArrival(
+    params: WeatherAtFlightArrivalParams,
+  ): Promise<{ summary: string; raw?: unknown }> {
+    const flightResult = await this.getFlightStatus(params);
+    if (!flightResult.arrivalAirport) {
+      return {
+        summary: flightResult.summary,
+        raw: flightResult.raw,
+      };
+    }
+
+    const placeForGeocode = flightResult.arrivalAirport;
+    const coords = await this.geocodeCity(placeForGeocode);
+    if (!coords) {
+      return {
+        summary: `${flightResult.summary} Could not resolve weather for arrival location "${placeForGeocode}".`,
+        raw: flightResult.raw,
+      };
+    }
+
+    try {
+      const weatherStr = await this.fetchOpenMeteoCurrent(coords[0], coords[1]);
+      const summary = `${flightResult.summary} Weather at arrival (${placeForGeocode}): ${weatherStr}`;
+      return { summary, raw: { flight: flightResult.raw, weather: weatherStr } };
+    } catch (e) {
+      this.logger.warn('Weather at arrival failed', (e as Error).message);
+      return {
+        summary: `${flightResult.summary} Weather at arrival could not be fetched.`,
+        raw: flightResult.raw,
       };
     }
   }

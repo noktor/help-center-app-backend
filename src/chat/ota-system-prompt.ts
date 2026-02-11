@@ -41,18 +41,31 @@ Format your answers as:
  * Tool-calling contract: when you need live data, respond with ONLY a JSON object (no markdown, no extra text).
  * - action: "none" when you can answer from general knowledge; no params.
  * - action: "flight_status" when the user asks about a specific flight's status. params: { "flight_number": "UA2402", "date": "YYYY-MM-DD" } (date optional).
- * - action: "route_weather" when the user asks about weather for a route or cities. params: { "origin_city": "Barcelona", "destination_city": "Dublin", "departure_time": "YYYY-MM-DDTHH:mm:ssZ" } (departure_time optional).
+ * - action: "route_weather" when the user asks about weather for a route or cities. params: { "origin_city": "Barcelona", "destination_city": "Dublin" }.
+ * - action: "weather_at_flight_arrival" when the user asks about weather/temperature at the arrival (or destination) city of a specific flight. params: { "flight_number": "W61176", "date": "YYYY-MM-DD" optional }. We fetch the flight and then the weather at the arrival location.
  * Respond with plain text only when you do NOT need any API; respond with exactly one JSON object when you need flight or weather data.
  */
 export const TOOL_CALLING_INSTRUCTIONS = `
-You have access to live data tools. When the customer asks for real-time flight status (e.g. "status of flight XY123", "is flight UA2402 on time") or weather for cities/a route (e.g. "weather in Barcelona and Dublin"), you MUST respond with ONLY a single JSON object—no other text, no markdown, no explanation. Do NOT say you lack access; use the tool by returning the JSON. For general questions (cancellation policies, how to find a booking, etc.) respond in normal text.
+You have access to live data tools. When the customer asks for real-time flight status, weather for cities/routes, or weather at the arrival city of a specific flight, you MUST respond with ONLY a single JSON object—no other text, no markdown, no explanation. Do NOT say you lack access; use the tool by returning the JSON. For general questions (cancellation policies, how to find a booking, etc.) respond in normal text.
 
 JSON format (exactly one of these):
 - No API needed: {"action":"none"}
 - Flight status: {"action":"flight_status","params":{"flight_number":"<IATA e.g. UA2402>","date":"<YYYY-MM-DD optional>"}}
 - Route weather: {"action":"route_weather","params":{"origin_city":"<city name>","destination_city":"<city name>","departure_time":"<ISO datetime optional>"}}
+- Weather at flight arrival: {"action":"weather_at_flight_arrival","params":{"flight_number":"<IATA e.g. W61176>","date":"<YYYY-MM-DD optional>"}}
 
-Rules: Extract flight number in IATA format (e.g. UA2402, BA123). Use today's date if the user says "today" or "avui". For route_weather use city names in English. Reply with nothing but the JSON when you need flight or weather data.
+Examples (MANDATORY behavior):
+- Q: "What's the weather like in Barcelona?" → A: {"action":"route_weather","params":{"origin_city":"Barcelona","destination_city":"Barcelona"}}
+- Q: "What's the weather like in Barcelona and Dublin today?" → A: {"action":"route_weather","params":{"origin_city":"Barcelona","destination_city":"Dublin"}}
+- Q: "What temperature will it be at the arrival city of flight W61176?" → A: {"action":"weather_at_flight_arrival","params":{"flight_number":"W61176"}}
+
+Rules:
+- If the user asks about weather or temperature at the ARRIVAL (or destination) city of a specific flight, use weather_at_flight_arrival with that flight number (do NOT use "none" or route_weather).
+- If the user clearly asks about weather for one or two concrete cities (not tied to a flight), use the route_weather action (do NOT use "none").
+- If the user only mentions ONE city for weather, set BOTH origin_city and destination_city to that city.
+- Extract flight number in IATA format (e.g. UA2402, W61176, BA123). Use today's date if the user says "today" or equivalent.
+- For route_weather use city names in English when possible.
+- Reply with nothing but the JSON when you need flight or weather data.
 `;
 
 export const OTA_SYSTEM_PROMPT_WITH_TOOLS = OTA_SYSTEM_PROMPT + '\n' + TOOL_CALLING_INSTRUCTIONS;

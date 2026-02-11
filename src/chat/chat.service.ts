@@ -6,11 +6,34 @@ import {
   OTA_SYSTEM_PROMPT_WITH_TOOLS,
 } from './ota-system-prompt';
 import { parseToolAction } from './tools/tool-action.types';
-import type { FlightStatusParams, RouteWeatherParams } from './tools/tool-action.types';
+import type {
+  FlightStatusParams,
+  RouteWeatherParams,
+  WeatherAtFlightArrivalParams,
+} from './tools/tool-action.types';
 import { TravelDataService } from './integrations/travel-data.service';
 
 const MAX_MESSAGES = 12;
 const LLM_OPTS = { temperature: 0.3, maxTokens: 600 };
+
+function looksLikeJson(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith('{') && t.includes('action');
+}
+
+async function requestNaturalLanguageReply(
+  llmClient: ILlmClient,
+  userMessages: ChatMessageDto[],
+  opts: { temperature?: number; maxTokens?: number },
+  maxMessages: number,
+): Promise<string> {
+  const systemPrompt =
+    OTA_SYSTEM_PROMPT +
+    '\n\nIMPORTANT: Always reply in natural, friendly language. Never output JSON, code blocks, or raw data structures.';
+  const messages: ChatMessageDto[] = [{ role: 'system', content: systemPrompt }, ...userMessages];
+  const trimmed = [messages[0], ...messages.slice(-maxMessages)];
+  return llmClient.generateReply(trimmed, opts);
+}
 
 @Injectable()
 export class ChatService {
@@ -34,8 +57,20 @@ export class ChatService {
     const firstReply = await this.llmClient.generateReply(trimmedPhase1, LLM_OPTS);
     const toolAction = parseToolAction(firstReply);
 
-    if (toolAction === null || toolAction.action === 'none') {
-      return { reply: firstReply };
+    if (toolAction === null) {
+      const reply = looksLikeJson(firstReply)
+        ? await requestNaturalLanguageReply(this.llmClient, userMessages, LLM_OPTS, MAX_MESSAGES)
+        : firstReply;
+      return { reply };
+    }
+    if (toolAction.action === 'none') {
+      const reply = await requestNaturalLanguageReply(
+        this.llmClient,
+        userMessages,
+        LLM_OPTS,
+        MAX_MESSAGES,
+      );
+      return { reply };
     }
 
     let toolResultSummary: string;
@@ -49,8 +84,19 @@ export class ChatService {
         (toolAction.params ?? {}) as RouteWeatherParams,
       );
       toolResultSummary = `TOOL_RESULT route_weather: ${result.summary}`;
+    } else if (toolAction.action === 'weather_at_flight_arrival') {
+      const result = await this.travelData.getWeatherAtFlightArrival(
+        (toolAction.params ?? {}) as WeatherAtFlightArrivalParams,
+      );
+      toolResultSummary = `TOOL_RESULT weather_at_flight_arrival: ${result.summary}`;
     } else {
-      return { reply: firstReply };
+      const reply = await requestNaturalLanguageReply(
+        this.llmClient,
+        userMessages,
+        LLM_OPTS,
+        MAX_MESSAGES,
+      );
+      return { reply };
     }
 
     const messagesPhase2: ChatMessageDto[] = [

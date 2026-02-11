@@ -15,11 +15,11 @@ export class MockLlmClient implements ILlmClient {
     const question = lastUserMessage?.content ?? '';
 
     return [
-      'Això és una resposta de demostració del help center chatbot.',
-      'Ara mateix estem treballant amb un mode sense connexió a cap LLM extern.',
+      'This is a demo response from the help center chatbot.',
+      'We are currently running in offline mode with no connection to any external LLM.',
       question
-        ? `He rebut la teva pregunta: "${question}". En un entorn real, aquí veuries una resposta generada per IA amb els propers passos.`
-        : 'En un entorn real, aquí veuries una resposta generada per IA amb els propers passos.',
+        ? `I received your question: "${question}". In a real environment, you would see an AI-generated response with the next steps.`
+        : 'In a real environment, you would see an AI-generated response with the next steps.',
     ].join('\n\n');
   }
 }
