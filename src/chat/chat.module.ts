@@ -9,14 +9,16 @@ import { OpenAiLlmClient } from './llm/openai-llm.client';
 import { MockLlmClient } from './llm/mock-llm.client';
 import { FreeflowLlmClient } from './llm/freeflow-llm.client';
 import { MultiLlmClient } from './llm/multi-llm.client';
-import { TravelDataService } from './integrations/travel-data.service';
+import { AviationstackService } from './integrations/aviationstack.service';
+import { OpenMeteoService } from './integrations/open-meteo.service';
 
 @Module({
   imports: [ConfigModule, HttpModule],
   controllers: [ChatController],
   providers: [
     ChatService,
-    TravelDataService,
+    AviationstackService,
+    OpenMeteoService,
     GeminiLlmClient,
     OpenAiLlmClient,
     MockLlmClient,
