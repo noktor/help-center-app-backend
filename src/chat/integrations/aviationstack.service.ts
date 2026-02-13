@@ -17,7 +17,7 @@ export class AviationstackService {
     this.aviationKey = this.config.get<string>('AVIATIONSTACK_API_KEY') ?? '';
     this.aviationBaseUrl =
       this.config.get<string>('AVIATIONSTACK_API_BASE_URL') ??
-      'http://api.aviationstack.com/v1';
+      'https://api.aviationstack.com/v1';
   }
 
   /**
@@ -44,7 +44,9 @@ export class AviationstackService {
       access_key: this.aviationKey,
       flight_iata: flightIata,
     });
-    if (date) searchParams.set('flight_date', date);
+    // Free tier does NOT support flight_date - it returns 403. Only add date on paid plans.
+    const skipDate = this.config.get<string>('AVIATIONSTACK_SKIP_DATE') !== 'false';
+    if (date && !skipDate) searchParams.set('flight_date', date);
 
     try {
       const res = await firstValueFrom(

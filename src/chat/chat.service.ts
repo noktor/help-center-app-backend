@@ -1,11 +1,11 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ChatRequestDto, ChatMessageDto } from './dto/chat-request.dto';
 import { ILlmClient } from './llm/llm-client.interface';
 import {
   OTA_SYSTEM_PROMPT,
   OTA_SYSTEM_PROMPT_WITH_TOOLS,
 } from './ota-system-prompt';
-import { parseToolAction } from './tools/tool-action.types';
+import { parseToolAction, stripToolJsonFromReply } from './tools/tool-action.types';
 import type {
   FlightStatusParams,
   RouteWeatherParams,
@@ -38,6 +38,8 @@ async function requestNaturalLanguageReply(
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(
     @Inject('ILlmClient') private readonly llmClient: ILlmClient,
     private readonly aviationstack: AviationstackService,
@@ -57,13 +59,16 @@ export class ChatService {
     ];
 
     const firstReply = await this.llmClient.generateReply(trimmedPhase1, LLM_OPTS);
+    this.logger.log(`[DEBUG] LLM first reply (first 400 chars): ${String(firstReply).slice(0, 400)}`);
     const toolAction = parseToolAction(firstReply);
+    this.logger.log(`[DEBUG] parseToolAction result: ${toolAction ? JSON.stringify(toolAction) : 'null'}`);
 
     if (toolAction === null) {
+      this.logger.warn(`[DEBUG] LLM did NOT return valid tool JSON - parseToolAction=null. Services will NOT be called.`);
       const reply = looksLikeJson(firstReply)
         ? await requestNaturalLanguageReply(this.llmClient, userMessages, LLM_OPTS, MAX_MESSAGES)
         : firstReply;
-      return { reply };
+      return { reply: stripToolJsonFromReply(reply) };
     }
     if (toolAction.action === 'none') {
       const reply = await requestNaturalLanguageReply(
@@ -72,21 +77,26 @@ export class ChatService {
         LLM_OPTS,
         MAX_MESSAGES,
       );
-      return { reply };
+      return { reply: stripToolJsonFromReply(reply) };
     }
 
     let toolResultSummary: string;
     if (toolAction.action === 'flight_status') {
+      this.logger.log(`[DEBUG] Calling AviationstackService.getFlightStatus with params: ${JSON.stringify(toolAction.params)}`);
       const result = await this.aviationstack.getFlightStatus(
         (toolAction.params ?? {}) as FlightStatusParams,
       );
+      this.logger.log(`[DEBUG] Aviationstack result summary: ${result.summary.slice(0, 100)}...`);
       toolResultSummary = `TOOL_RESULT flight_status: ${result.summary}`;
     } else if (toolAction.action === 'route_weather') {
+      this.logger.log(`[DEBUG] Calling OpenMeteoService.getRouteWeather with params: ${JSON.stringify(toolAction.params)}`);
       const result = await this.openMeteo.getRouteWeather(
         (toolAction.params ?? {}) as RouteWeatherParams,
       );
+      this.logger.log(`[DEBUG] OpenMeteo route_weather result: ${result.summary.slice(0, 100)}...`);
       toolResultSummary = `TOOL_RESULT route_weather: ${result.summary}`;
     } else if (toolAction.action === 'weather_at_flight_arrival') {
+      this.logger.log(`[DEBUG] Calling AviationstackService + OpenMeteoService for weather_at_flight_arrival`);
       const flightResult = await this.aviationstack.getFlightStatus(
         (toolAction.params ?? {}) as WeatherAtFlightArrivalParams,
       );
@@ -107,7 +117,7 @@ export class ChatService {
         LLM_OPTS,
         MAX_MESSAGES,
       );
-      return { reply };
+      return { reply: stripToolJsonFromReply(reply) };
     }
 
     const messagesPhase2: ChatMessageDto[] = [
@@ -126,7 +136,7 @@ export class ChatService {
     ];
 
     const finalReply = await this.llmClient.generateReply(trimmedPhase2, LLM_OPTS);
-    return { reply: finalReply };
+    return { reply: stripToolJsonFromReply(finalReply) };
   }
 }
 
