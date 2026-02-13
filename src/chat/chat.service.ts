@@ -11,7 +11,8 @@ import type {
   RouteWeatherParams,
   WeatherAtFlightArrivalParams,
 } from './tools/tool-action.types';
-import { TravelDataService } from './integrations/travel-data.service';
+import { AviationstackService } from './integrations/aviationstack.service';
+import { OpenMeteoService } from './integrations/open-meteo.service';
 
 const MAX_MESSAGES = 12;
 const LLM_OPTS = { temperature: 0.3, maxTokens: 600 };
@@ -39,7 +40,8 @@ async function requestNaturalLanguageReply(
 export class ChatService {
   constructor(
     @Inject('ILlmClient') private readonly llmClient: ILlmClient,
-    private readonly travelData: TravelDataService,
+    private readonly aviationstack: AviationstackService,
+    private readonly openMeteo: OpenMeteoService,
   ) {}
 
   async handleChat(body: ChatRequestDto) {
@@ -75,20 +77,29 @@ export class ChatService {
 
     let toolResultSummary: string;
     if (toolAction.action === 'flight_status') {
-      const result = await this.travelData.getFlightStatus(
+      const result = await this.aviationstack.getFlightStatus(
         (toolAction.params ?? {}) as FlightStatusParams,
       );
       toolResultSummary = `TOOL_RESULT flight_status: ${result.summary}`;
     } else if (toolAction.action === 'route_weather') {
-      const result = await this.travelData.getRouteWeather(
+      const result = await this.openMeteo.getRouteWeather(
         (toolAction.params ?? {}) as RouteWeatherParams,
       );
       toolResultSummary = `TOOL_RESULT route_weather: ${result.summary}`;
     } else if (toolAction.action === 'weather_at_flight_arrival') {
-      const result = await this.travelData.getWeatherAtFlightArrival(
+      const flightResult = await this.aviationstack.getFlightStatus(
         (toolAction.params ?? {}) as WeatherAtFlightArrivalParams,
       );
-      toolResultSummary = `TOOL_RESULT weather_at_flight_arrival: ${result.summary}`;
+      let summary: string;
+      if (!flightResult.arrivalAirport) {
+        summary = flightResult.summary;
+      } else {
+        const weatherResult = await this.openMeteo.getWeatherForPlace(
+          flightResult.arrivalAirport,
+        );
+        summary = `${flightResult.summary} Weather at arrival (${flightResult.arrivalAirport}): ${weatherResult.summary}`;
+      }
+      toolResultSummary = `TOOL_RESULT weather_at_flight_arrival: ${summary}`;
     } else {
       const reply = await requestNaturalLanguageReply(
         this.llmClient,
